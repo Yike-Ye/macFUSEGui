@@ -18,10 +18,16 @@ import ServiceManagement
 // - The limiter allows up to N in-flight operations and queues the rest.
 /// Beginner note: This type groups related state and behavior for one part of the app.
 /// Read stored properties first, then follow methods top-to-bottom to understand flow.
-private actor OperationLimiter {
+/// Internal so tests can verify cancellation removes waiters from the queue.
+actor OperationLimiter {
+    private struct Waiter {
+        let id: UUID
+        let continuation: CheckedContinuation<Void, Error>
+    }
+
     private let maxConcurrent: Int
     private var inFlight: Int = 0
-    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var waiters: [Waiter] = []
 
     /// Beginner note: Initializers create valid state before any other method is used.
     init(maxConcurrent: Int) {
@@ -29,22 +35,47 @@ private actor OperationLimiter {
     }
 
     /// Beginner note: This method is one step in the feature workflow for this file.
-    /// This is async: it can suspend and resume later without blocking a thread.
-    func acquire() async {
+    /// This is async and throwing: throws CancellationError when the calling task is
+    /// cancelled while waiting. Cancellation also removes the waiter from the queue so
+    /// it does not delay subsequent acquisitions.
+    func acquire() async throws {
         if inFlight < maxConcurrent {
             inFlight += 1
             return
         }
-        await withCheckedContinuation { continuation in
-            waiters.append(continuation)
+        let waiterID = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                // Actor isolation makes the cancel-check + queue-append atomic with respect
+                // to other actor methods. If the task is already cancelled at this point
+                // we resume immediately rather than parking a waiter that nobody can wake.
+                if Task.isCancelled {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                waiters.append(Waiter(id: waiterID, continuation: continuation))
+            }
+        } onCancel: {
+            // The cancel handler runs outside actor isolation, so dispatch back to the
+            // actor to remove the waiter. If release() already resumed the waiter, the
+            // lookup will miss and this is a no-op - exactly one resume happens either way.
+            Task { await self.cancelWaiter(id: waiterID) }
         }
+    }
+
+    private func cancelWaiter(id: UUID) {
+        guard let index = waiters.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+        let waiter = waiters.remove(at: index)
+        waiter.continuation.resume(throwing: CancellationError())
     }
 
     /// Beginner note: This method is one step in the feature workflow for this file.
     func release() {
         if !waiters.isEmpty {
-            let continuation = waiters.removeFirst()
-            continuation.resume()
+            let waiter = waiters.removeFirst()
+            waiter.continuation.resume()
             return
         }
         inFlight = max(0, inFlight - 1)
@@ -1181,7 +1212,13 @@ final class RemotesViewModel: ObservableObject {
 
             // Cross-remote global limiter (max 4 in parallel) to prevent overload.
             let limiterQueuedAt = Date()
-            await self.operationLimiter.acquire()
+            do {
+                try await self.operationLimiter.acquire()
+            } catch {
+                // Cancelled before a slot was acquired. No slot to release - skip the body
+                // entirely so we don't register a release defer for a slot we never held.
+                return
+            }
             let limiterWaitMs = max(0, Int(Date().timeIntervalSince(limiterQueuedAt) * 1_000))
             defer {
                 Task {

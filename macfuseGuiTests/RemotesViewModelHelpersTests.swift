@@ -411,6 +411,66 @@ final class RemotesViewModelHelpersTests: XCTestCase {
         )
     }
 
+    /// acquire() must throw CancellationError when the caller is cancelled while waiting,
+    /// rather than silently parking the task in the queue until some unrelated release()
+    /// happens to wake it. Recovery bursts produce lots of cancelled queued waiters, and
+    /// silent parking adds latency to every legitimate operation behind them in FIFO order.
+    func testOperationLimiterAcquireThrowsCancellationWhenCallerIsCancelledWhileWaiting() async throws {
+        let limiter = OperationLimiter(maxConcurrent: 1)
+        try await limiter.acquire()
+
+        let waiter = Task { () -> Bool in
+            do {
+                try await limiter.acquire()
+                return false
+            } catch is CancellationError {
+                return true
+            } catch {
+                return false
+            }
+        }
+
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        waiter.cancel()
+        let cancelled = await waiter.value
+
+        XCTAssertTrue(
+            cancelled,
+            "acquire() must throw CancellationError when caller is cancelled mid-wait."
+        )
+
+        await limiter.release()
+    }
+
+    /// A cancelled queued waiter must be removed from the waiters list. Otherwise a later
+    /// release() would wake the cancelled waiter first (FIFO), forcing the legitimate
+    /// waiter behind it to pay an extra actor round-trip before being woken.
+    func testOperationLimiterCancelledWaiterDoesNotDelaySubsequentAcquire() async throws {
+        let limiter = OperationLimiter(maxConcurrent: 1)
+        try await limiter.acquire()
+
+        let cancelledWaiter = Task {
+            try await limiter.acquire()
+        }
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        cancelledWaiter.cancel()
+        _ = try? await cancelledWaiter.value
+
+        await limiter.release()
+
+        let acquireStart = Date()
+        try await limiter.acquire()
+        let elapsed = Date().timeIntervalSince(acquireStart)
+
+        XCTAssertLessThan(
+            elapsed,
+            0.2,
+            "A fresh acquire after the cancelled waiter must not be delayed by a stale queue entry."
+        )
+
+        await limiter.release()
+    }
+
     /// Regression guard: a second wake event must cancel the prior preflight task instead
     /// of double-spawning cleanup work and prematurely flipping `wakePreflightInProgress`
     /// while the original task is still running.
