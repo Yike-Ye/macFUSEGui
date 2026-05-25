@@ -3701,9 +3701,27 @@ final class LaunchAtLoginService {
         _ = try? await runLaunchctl(arguments: ["bootout", currentUserLaunchDomain, launchAgentPlistURL.path])
         _ = try? await runLaunchctl(arguments: ["bootout", currentUserLaunchDomain, launchAgentLabel])
 
-        // launchctl enable/bootstrap can fail due to policy/permissions; caller surfaces failure if state does not stick.
-        _ = try? await runLaunchctl(arguments: ["bootstrap", currentUserLaunchDomain, launchAgentPlistURL.path])
+        // bootstrap must succeed; otherwise currentState() would see a misleading plist
+        // file on disk while the agent is not actually loaded.
+        do {
+            _ = try await runLaunchctl(arguments: ["bootstrap", currentUserLaunchDomain, launchAgentPlistURL.path])
+        } catch {
+            try? fileManager.removeItem(at: launchAgentPlistURL)
+            throw error
+        }
+
+        // enable is best-effort: bootstrap normally enables, and explicit enable can fail
+        // when the agent is already enabled by domain policy.
         _ = try? await runLaunchctl(arguments: ["enable", "\(currentUserLaunchDomain)/\(launchAgentLabel)"])
+
+        // print confirms the agent is actually loaded. Some failure modes leave launchctl
+        // in an unloaded state even after bootstrap appears to succeed.
+        do {
+            _ = try await runLaunchctl(arguments: ["print", "\(currentUserLaunchDomain)/\(launchAgentLabel)"])
+        } catch {
+            try? fileManager.removeItem(at: launchAgentPlistURL)
+            throw error
+        }
     }
 
     /// Beginner note: This method is one step in the feature workflow for this file.

@@ -54,8 +54,76 @@ final class LaunchAtLoginServiceTests: XCTestCase {
         XCTAssertTrue(context.fileManager.fileExists(atPath: context.launchAgentPlistURL.path))
         let didBootstrap = await runner.hasLaunchctlSubcommand("bootstrap")
         let didEnable = await runner.hasLaunchctlSubcommand("enable")
+        let didPrint = await runner.hasLaunchctlSubcommand("print")
         XCTAssertTrue(didBootstrap)
         XCTAssertTrue(didEnable)
+        XCTAssertTrue(didPrint)
+    }
+
+    /// Beginner note: This method is one step in the feature workflow for this file.
+    /// This is async and throwing: callers must await it and handle failures.
+    func testSetEnabledThrowsAndRemovesPlistWhenLaunchctlBootstrapFails() async throws {
+        let context = try makeContext()
+        defer { try? context.cleanup() }
+
+        let appService = FakeLaunchAtLoginAppService(
+            status: .notRegistered,
+            registerError: AppError.unknown("register failed")
+        )
+        let runner = FakeLaunchctlRunner()
+        await runner.failOnSubcommand("bootstrap")
+        let service = LaunchAtLoginService(
+            appService: appService,
+            fileManager: context.fileManager,
+            runner: runner
+        )
+
+        do {
+            _ = try await service.setEnabled(true)
+            XCTFail("Expected setEnabled to throw when launchctl bootstrap fails.")
+        } catch {
+            // expected: bootstrap failure must surface as an error so the UI does not lie.
+        }
+
+        XCTAssertFalse(
+            context.fileManager.fileExists(atPath: context.launchAgentPlistURL.path),
+            "Stale plist must be removed on bootstrap failure so currentState() does not report enabled."
+        )
+        let didBootstrap = await runner.hasLaunchctlSubcommand("bootstrap")
+        let didPrint = await runner.hasLaunchctlSubcommand("print")
+        XCTAssertTrue(didBootstrap)
+        XCTAssertFalse(didPrint, "print must not run after bootstrap failure.")
+    }
+
+    /// Beginner note: This method is one step in the feature workflow for this file.
+    /// This is async and throwing: callers must await it and handle failures.
+    func testSetEnabledThrowsAndRemovesPlistWhenLaunchctlPrintFails() async throws {
+        let context = try makeContext()
+        defer { try? context.cleanup() }
+
+        let appService = FakeLaunchAtLoginAppService(
+            status: .notRegistered,
+            registerError: AppError.unknown("register failed")
+        )
+        let runner = FakeLaunchctlRunner()
+        await runner.failOnSubcommand("print")
+        let service = LaunchAtLoginService(
+            appService: appService,
+            fileManager: context.fileManager,
+            runner: runner
+        )
+
+        do {
+            _ = try await service.setEnabled(true)
+            XCTFail("Expected setEnabled to throw when launchctl print verification fails.")
+        } catch {
+            // expected: agent not actually loaded must surface as an error.
+        }
+
+        XCTAssertFalse(
+            context.fileManager.fileExists(atPath: context.launchAgentPlistURL.path),
+            "Stale plist must be removed when launchctl print confirms the agent is not loaded."
+        )
     }
 
     /// Beginner note: This method is one step in the feature workflow for this file.
@@ -174,6 +242,7 @@ private final class FakeLaunchAtLoginAppService: LaunchAtLoginAppService {
 /// Read stored properties first, then follow methods top-to-bottom to understand flow.
 private actor FakeLaunchctlRunner: ProcessRunning {
     private var subcommands: [String] = []
+    private var failingSubcommands: Set<String> = []
 
     func run(
         executable: String,
@@ -182,19 +251,25 @@ private actor FakeLaunchctlRunner: ProcessRunning {
         timeout: TimeInterval,
         standardInput: String?
     ) async throws -> ProcessResult {
+        var shouldFail = false
         if executable == "/bin/launchctl", let subcommand = arguments.first {
             subcommands.append(subcommand)
+            shouldFail = failingSubcommands.contains(subcommand)
         }
 
         return ProcessResult(
             executable: executable,
             arguments: arguments,
             stdout: "",
-            stderr: "",
-            exitCode: 0,
+            stderr: shouldFail ? "simulated failure" : "",
+            exitCode: shouldFail ? 1 : 0,
             timedOut: false,
             duration: 0.01
         )
+    }
+
+    func failOnSubcommand(_ name: String) {
+        failingSubcommands.insert(name)
     }
 
     func hasLaunchctlSubcommand(_ name: String) -> Bool {
