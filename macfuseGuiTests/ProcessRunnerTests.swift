@@ -285,6 +285,42 @@ final class MountManagerParallelOperationTests: XCTestCase {
         XCTAssertLessThan(elapsed, 1.0, "Targeted df inspection should avoid waiting on a slow global mount probe.")
     }
 
+    /// Cancellation during refreshStatus must preserve the cached state instead of
+    /// synthesizing a `.error` chip with a `Swift.CancellationError` description.
+    /// Supersession of a recovery refresh by a newer intent is routine, and the raw
+    /// CancellationError description is not a user-meaningful message.
+    func testCancelledRefreshStatusPreservesCachedStatusInsteadOfReportingError() async throws {
+        let mountPoint = "/tmp/macfusegui-tests/cancelled-refresh"
+        let runner = FakeMountRunner(
+            connectDelayByMountPoint: [:],
+            mountInspectionDelay: 2.0,
+            dfDelayByMountPoint: [mountPoint: 2.0]
+        )
+        let manager = makeManager(runner: runner)
+        let remote = makeRemote(name: "Cancelled Refresh", mountPoint: mountPoint)
+
+        let task = Task { await manager.refreshStatus(remote: remote) }
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        task.cancel()
+        let status = await task.value
+
+        XCTAssertNotEqual(
+            status.state,
+            .error,
+            "Cancellation must not transition status to .error."
+        )
+        if let lastError = status.lastError {
+            XCTAssertFalse(
+                lastError.lowercased().contains("cancellationerror"),
+                "Refresh status must not publish a CancellationError to the UI. Got: \(lastError)"
+            )
+            XCTAssertFalse(
+                lastError.contains("couldn't be completed"),
+                "Refresh status must not publish a CancellationError to the UI. Got: \(lastError)"
+            )
+        }
+    }
+
     /// Beginner note: This method proves that a cancelled stale connect does not wedge future reconnect attempts.
     /// This is async and throwing: callers must await it and handle failures.
     func testCancelledStaleConnectAllowsFreshReconnect() async throws {

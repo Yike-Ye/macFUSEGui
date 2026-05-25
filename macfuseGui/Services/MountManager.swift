@@ -438,6 +438,14 @@ actor MountManager {
             updateCachedStatus(disconnected, for: remote.id)
             return disconnected
         } catch {
+            // Cancellation must not overwrite a stable cached status with a synthetic
+            // .error chip. Supersession during recovery refresh is routine, and the
+            // raw CancellationError description ("The operation couldn't be completed.
+            // (Swift.CancellationError error 1.)") is not a meaningful user message.
+            if Task.isCancelled || error is CancellationError {
+                return cachedStatus(for: remote.id)
+            }
+
             let message = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
             let normalized = message.lowercased()
 
