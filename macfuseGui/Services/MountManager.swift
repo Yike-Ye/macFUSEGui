@@ -67,7 +67,7 @@ actor MountManager {
     private let maxDirectoryQueryFailurePreserveMisses = 2
     // Some sshfs builds daemonize and report exit 0 slightly before the mounted path
     // becomes visible to `df` / `mount`. Keep a bounded grace window so recovery does
-    // not stack duplicate reconnects on a mount that is still materializing.
+    // not stack duplicate reconnects onou k a mount that is still materializing.
     private let postConnectMountDetectionTimeout: TimeInterval
     // After a cleanup-driven reconnect, give directory queries a short warm-up window
     // before they are allowed to trigger stale recovery again.
@@ -1202,6 +1202,12 @@ actor MountManager {
         try throwIfCancelled()
         let capabilities = await resolveCapabilities(sshfsPath: sshfsPath)
         func runConnectAttempt(passwordEnvironment: [String: String]) async throws -> RemoteStatus {
+            diagnostics.append(
+                level: .info,
+                category: "mount",
+                message: "Connect request for \(remote.displayName): auth=\(remote.authMode.rawValue) host=\(remote.host):\(remote.port) remotePath=\(remote.remoteDirectory) localMount=\(remote.localMountPoint) proxyJumpEnabled=\(remote.proxyJumpEnabled) disableLocalCaches=\(remote.disableLocalCaches) dcacheFamily=\(capabilities.supportsDCacheFamily) olderCacheFamily=\(capabilities.supportsOlderCacheFamily)"
+            )
+
             let command = commandBuilder.build(
                 sshfsPath: sshfsPath,
                 remote: remote,
@@ -1209,6 +1215,17 @@ actor MountManager {
                 capabilities: capabilities
             )
 
+            diagnostics.append(
+                level: .debug,
+                category: "mount",
+                message: "sshfs command built for \(remote.displayName): executable=\(command.executable) argsCount=\(command.arguments.count) environmentKeys=\(command.environment.keys.sorted().joined(separator: ","))"
+            )
+            let commandArguments = command.arguments.joined(separator: " ")
+            diagnostics.append(
+                level: .debug,
+                category: "mount",
+                message: "sshfs mount behavior for \(remote.displayName): defer_permissions=\(commandArguments.contains("defer_permissions")) noappledouble=\(commandArguments.contains("noappledouble")) noapplexattr=\(commandArguments.contains("noapplexattr")) auto_cache=\(commandArguments.contains("auto_cache")) nolocalcaches=\(commandArguments.contains("nolocalcaches")) ssh_command=\(commandArguments.contains("ssh_command=") ? "set" : "unset")"
+            )
             diagnostics.append(level: .info, category: "mount", message: "Running \(command.redactedCommand)")
             let commandStartedAt = Date()
             diagnostics.append(
@@ -1228,6 +1245,12 @@ actor MountManager {
                 level: .debug,
                 category: "mount",
                 message: "probe end op=sshfs-connect remoteID=\(remote.id.uuidString) operationID=\(operationID?.uuidString ?? "-") mountPoint=\(remote.localMountPoint) elapsedMs=\(commandElapsedMs) timedOut=\(result.timedOut) exit=\(result.exitCode)"
+            )
+
+            diagnostics.append(
+                level: result.exitCode == 0 ? .info : .warning,
+                category: "mount",
+                message: "sshfs connect finished for \(remote.displayName): exit=\(result.exitCode) timedOut=\(result.timedOut)"
             )
 
             try throwIfCancelled()

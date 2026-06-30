@@ -3057,6 +3057,16 @@ final class RemotesViewModel: ObservableObject {
         }
     }
 
+    /// Unique, sorted jump-host specs already used by saved remotes. Powers the
+    /// "pick a known bastion" menu in the editor without introducing new storage.
+    var knownProxyJumpHosts: [String] {
+        let hosts = remotes.compactMap { remote -> String? in
+            let trimmed = remote.proxyJump?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        return Array(Set(hosts)).sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
     /// Beginner note: This method is one step in the feature workflow for this file.
     func browserFavorites(for draft: RemoteDraft) -> [String] {
         if let id = draft.id, let remote = remotes.first(where: { $0.id == id }) {

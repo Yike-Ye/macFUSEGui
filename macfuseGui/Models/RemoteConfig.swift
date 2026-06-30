@@ -18,6 +18,12 @@ struct RemoteConfig: Identifiable, Codable, Equatable, Hashable, Sendable {
     var username: String
     var authMode: RemoteAuth
     var privateKeyPath: String?
+    // Optional SSH ProxyJump spec (e.g. "user@bastion" or "j1,j2"). Forwarded to ssh
+    // on the SSHFS mount path only; the libssh2 browser does not tunnel through it yet.
+    // proxyJumpEnabled gates whether the saved spec is actually applied, so users can
+    // keep a bastion on file while temporarily mounting directly.
+    var proxyJumpEnabled: Bool
+    var proxyJump: String?
     var remoteDirectory: String
     var localMountPoint: String
     var isFavorite: Bool
@@ -51,6 +57,8 @@ struct RemoteConfig: Identifiable, Codable, Equatable, Hashable, Sendable {
         case username
         case authMode
         case privateKeyPath
+        case proxyJumpEnabled
+        case proxyJump
         case remoteDirectory
         case localMountPoint
         case isFavorite
@@ -69,6 +77,8 @@ struct RemoteConfig: Identifiable, Codable, Equatable, Hashable, Sendable {
         username: String,
         authMode: RemoteAuth,
         privateKeyPath: String? = nil,
+        proxyJumpEnabled: Bool = false,
+        proxyJump: String? = nil,
         remoteDirectory: String,
         localMountPoint: String,
         isFavorite: Bool = false,
@@ -84,6 +94,8 @@ struct RemoteConfig: Identifiable, Codable, Equatable, Hashable, Sendable {
         self.username = username
         self.authMode = authMode
         self.privateKeyPath = privateKeyPath
+        self.proxyJumpEnabled = proxyJumpEnabled
+        self.proxyJump = proxyJump
         self.remoteDirectory = remoteDirectory
         self.localMountPoint = localMountPoint
         self.isFavorite = isFavorite
@@ -111,6 +123,8 @@ struct RemoteConfig: Identifiable, Codable, Equatable, Hashable, Sendable {
         username = try container.decodeIfPresent(String.self, forKey: .username) ?? ""
         authMode = try container.decodeIfPresent(RemoteAuth.self, forKey: .authMode) ?? .privateKey
         privateKeyPath = try container.decodeIfPresent(String.self, forKey: .privateKeyPath)
+        proxyJumpEnabled = try container.decodeIfPresent(Bool.self, forKey: .proxyJumpEnabled) ?? false
+        proxyJump = try container.decodeIfPresent(String.self, forKey: .proxyJump)
         remoteDirectory = try container.decodeIfPresent(String.self, forKey: .remoteDirectory) ?? "/"
         localMountPoint = try container.decodeIfPresent(String.self, forKey: .localMountPoint) ?? ""
         isFavorite = try container.decodeIfPresent(Bool.self, forKey: .isFavorite) ?? false
@@ -133,6 +147,8 @@ struct RemoteConfig: Identifiable, Codable, Equatable, Hashable, Sendable {
         try container.encode(username, forKey: .username)
         try container.encode(authMode, forKey: .authMode)
         try container.encodeIfPresent(privateKeyPath, forKey: .privateKeyPath)
+        try container.encode(proxyJumpEnabled, forKey: .proxyJumpEnabled)
+        try container.encodeIfPresent(proxyJump, forKey: .proxyJump)
         try container.encode(remoteDirectory, forKey: .remoteDirectory)
         try container.encode(localMountPoint, forKey: .localMountPoint)
         try container.encode(isFavorite, forKey: .isFavorite)
@@ -170,6 +186,9 @@ struct RemoteDraft: Equatable, Sendable {
     var username: String = ""
     var authMode: RemoteAuth = .privateKey
     var privateKeyPath: String = ""
+    // Optional SSH ProxyJump / bastion spec, applied on the SSHFS mount path.
+    var proxyJumpEnabled: Bool = false
+    var proxyJump: String = ""
     // Transient in-memory value used by editor/test flows. Never persisted to remotes.json.
     var password: String = ""
     var remoteDirectory: String = "/"
@@ -208,6 +227,7 @@ struct RemoteDraft: Equatable, Sendable {
         let trimmedHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedPrivateKeyPath = privateKeyPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedProxyJump = proxyJump.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedRemoteDirectory = remoteDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedLocalMountPoint = localMountPoint.trimmingCharacters(in: .whitespacesAndNewlines)
         let validatedPort = (1...65_535).contains(port) ? port : 22
@@ -228,6 +248,8 @@ struct RemoteDraft: Equatable, Sendable {
             username: trimmedUsername,
             authMode: authMode,
             privateKeyPath: trimmedPrivateKeyPath.isEmpty ? nil : trimmedPrivateKeyPath,
+            proxyJumpEnabled: proxyJumpEnabled && !trimmedProxyJump.isEmpty,
+            proxyJump: trimmedProxyJump.isEmpty ? nil : trimmedProxyJump,
             remoteDirectory: trimmedRemoteDirectory,
             localMountPoint: trimmedLocalMountPoint,
             isFavorite: isFavorite,
@@ -249,6 +271,8 @@ extension RemoteDraft {
         self.username = remote.username
         self.authMode = remote.authMode
         self.privateKeyPath = remote.privateKeyPath ?? ""
+        self.proxyJumpEnabled = remote.proxyJumpEnabled
+        self.proxyJump = remote.proxyJump ?? ""
         self.password = password
         self.remoteDirectory = remote.remoteDirectory
         self.localMountPoint = remote.localMountPoint

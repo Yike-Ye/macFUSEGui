@@ -28,7 +28,7 @@ class BaseSettingsWindowController: NSWindowController {
 
         // sizingOptions drives contentMinSize/contentMaxSize from the SwiftUI view's
         // .frame(minWidth:idealWidth:maxWidth:minHeight:idealHeight:maxHeight:).
-        hosting.sizingOptions = [.preferredContentSize, .minSize, .maxSize]
+        hosting.sizingOptions = [.minSize, .maxSize]
 
         let window = NSWindow(contentViewController: hosting)
         window.title = title

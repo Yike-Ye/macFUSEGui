@@ -14,6 +14,14 @@ import SwiftUI
 /// Beginner note: This type groups related state and behavior for one part of the app.
 /// Read stored properties first, then follow methods top-to-bottom to understand flow.
 struct RemoteEditorView: View {
+    private struct ProxyJumpCandidate: Identifiable, Hashable {
+        let id: UUID
+        let title: String
+        let spec: String
+    }
+
+    private static let customProxyJumpSelection = "__custom_proxy_jump__"
+
     @StateObject private var viewModel: RemoteEditorViewModel
     @ObservedObject private var remotesViewModel: RemotesViewModel
     private let onComplete: (UUID?) -> Void
@@ -283,6 +291,8 @@ struct RemoteEditorView: View {
                 )
             }
 
+            proxyJumpSection
+
             Toggle(isOn: $viewModel.draft.autoConnectOnLaunch) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Auto-connect on app launch")
@@ -304,6 +314,53 @@ struct RemoteEditorView: View {
                 }
             }
             .toggleStyle(.switch)
+        }
+    }
+
+    private var proxyJumpSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Toggle(isOn: $viewModel.draft.proxyJumpEnabled) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Use jump machine (ProxyJump)")
+                        .font(.callout.weight(.semibold))
+                    Text("Route Finder mounts through a saved remote or custom OpenSSH jump spec.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .toggleStyle(.switch)
+
+            if viewModel.draft.proxyJumpEnabled {
+                if !proxyJumpCandidates.isEmpty {
+                    editorField(
+                        title: "Jump Machine",
+                        detail: "Choose from existing remote configurations, or keep Custom for a hand-written chain."
+                    ) {
+                        Picker("Jump Machine", selection: selectedProxyJumpBinding) {
+                            Text("Custom").tag(Self.customProxyJumpSelection)
+                            ForEach(proxyJumpCandidates) { candidate in
+                                Text("\(candidate.title) - \(candidate.spec)").tag(candidate.spec)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                    }
+                } else {
+                    infoCallout(
+                        title: "No saved jump machines",
+                        message: "Save another remote first, or enter a custom ProxyJump value below.",
+                        tint: .orange
+                    )
+                }
+
+                editorField(
+                    title: "ProxyJump Value",
+                    detail: "OpenSSH format, for example user@bastion:22. Use commas for multi-hop chains."
+                ) {
+                    TextField("user@bastion.example.com", text: $viewModel.draft.proxyJump)
+                        .textFieldStyle(.roundedBorder)
+                }
+            }
         }
     }
 
@@ -572,6 +629,59 @@ struct RemoteEditorView: View {
 
     private var remoteBrowserUnavailableTint: Color {
         !hasRemoteBrowserEndpoint ? .orange : .yellow
+    }
+
+    private var proxyJumpCandidates: [ProxyJumpCandidate] {
+        remotesViewModel.remotes.compactMap { remote in
+            if remote.id == viewModel.draft.id {
+                return nil
+            }
+
+            let displayName = remote.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+            let spec = proxyJumpSpec(for: remote)
+            guard !displayName.isEmpty, !spec.isEmpty else {
+                return nil
+            }
+
+            return ProxyJumpCandidate(
+                id: remote.id,
+                title: displayName,
+                spec: spec
+            )
+        }
+    }
+
+    private var selectedProxyJumpBinding: Binding<String> {
+        Binding(
+            get: {
+                let current = viewModel.draft.proxyJump.trimmingCharacters(in: .whitespacesAndNewlines)
+                if proxyJumpCandidates.contains(where: { $0.spec == current }) {
+                    return current
+                }
+                return Self.customProxyJumpSelection
+            },
+            set: { selection in
+                guard selection != Self.customProxyJumpSelection else {
+                    return
+                }
+                viewModel.draft.proxyJumpEnabled = true
+                viewModel.draft.proxyJump = selection
+            }
+        )
+    }
+
+    private func proxyJumpSpec(for remote: RemoteConfig) -> String {
+        let username = remote.username.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawHost = remote.host.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !username.isEmpty, !rawHost.isEmpty else {
+            return ""
+        }
+
+        let host = rawHost.contains(":") && !rawHost.hasPrefix("[")
+            ? "[\(rawHost)]"
+            : rawHost
+        let endpoint = "\(username)@\(host)"
+        return remote.port == 22 ? endpoint : "\(endpoint):\(remote.port)"
     }
 
     private var hasInlineFeedback: Bool {
